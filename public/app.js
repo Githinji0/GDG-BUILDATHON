@@ -207,16 +207,47 @@ async function fetchAndPopulate(endpoint, elementId, formatFn) {
     } else {
         data.forEach(item => {
             const li = document.createElement('li');
-            li.textContent = formatFn(item);
+            li.innerHTML = formatFn(item); // Changed from textContent to innerHTML to support buttons
             list.appendChild(li);
         });
     }
 }
 
 function loadGeneralData() {
-    fetchAndPopulate('venues', 'venue-list', v => `${v.name} (Cap: ${v.capacity})`);
+    fetchAndPopulate('venues', 'venue-list', v => {
+        let statusHtml = '';
+        if (currentUser && currentUser.role === 'admin') {
+            const btnClass = v.status === 'maintenance' ? 'btn-success' : 'btn-danger';
+            const btnText = v.status === 'maintenance' ? 'Set Available' : 'Set Maintenance';
+            const nextStatus = v.status === 'maintenance' ? 'available' : 'maintenance';
+            statusHtml = ` <button class="btn-xs ${btnClass}" onclick="toggleVenueStatus(${v.venue_id}, '${nextStatus}')">${btnText}</button>`;
+        }
+        const statusLabel = v.status === 'maintenance' ? ' <span style="color:orange">[MAINTENANCE]</span>' : '';
+        return `${v.name} (Cap: ${v.capacity})${statusLabel}${statusHtml}`;
+    });
     fetchAndPopulate('lecturers', 'lecturer-list', l => `${l.name} (${l.department})`);
 }
+
+window.toggleVenueStatus = async (id, status) => {
+    try {
+        const res = await fetchWithAuth(`${API_URL}/venues/${id}/status`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status })
+        });
+        if (res.ok) {
+            loadGeneralData(); 
+            // Also reload booking data if we are in booking view
+            if (document.getElementById('booking-section').style.display === 'block') {
+                loadBookingData();
+            }
+        } else {
+            alert('Failed to update venue status');
+        }
+    } catch (e) {
+        console.error(e);
+    }
+};
 
 function loadBookingData() {
     fetchAndPopulate('lecturers', 'lecturer', (item, el) => {
@@ -226,7 +257,12 @@ function loadBookingData() {
 
     fetchAndPopulate('venues', 'venue', (item, el) => {
         el.value = item.venue_id;
-        el.textContent = `${item.name} (Cap: ${item.capacity})`;
+        let text = `${item.name} (Cap: ${item.capacity})`;
+        if (item.status === 'maintenance') {
+            text += ' [MAINTENANCE]';
+            el.disabled = true;
+        }
+        el.textContent = text;
         el.dataset.capacity = item.capacity;
     });
 }

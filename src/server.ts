@@ -50,7 +50,7 @@ app.post('/api/login', (req, res) => {
         if (user.role === 'student' || user.role === 'class_rep') {
             try {
                 const stmt = system['db'].prepare('SELECT course FROM Students WHERE student_id = ?');
-                const st = stmt.get(user.related_id) as any;
+                const st = stmt.get(user.related_id) as { course: string };
                 console.log(`Student Record for related_id ${user.related_id}:`, st);
 
                 if (st) {
@@ -125,6 +125,19 @@ app.post('/api/venues', authenticateToken, authorizeRole(['admin']), (req, res) 
     res.json({ id, name, capacity });
 });
 
+app.patch('/api/venues/:id/status', authenticateToken, authorizeRole(['admin']), (req, res) => {
+    const { status } = req.body;
+    if (status !== 'available' && status !== 'maintenance') {
+        return res.status(400).json({ message: 'Invalid status' });
+    }
+    const success = system.updateVenueStatus(Number(req.params.id), status);
+    if (success) {
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ message: 'Venue not found' });
+    }
+});
+
 app.post('/api/lecturers', authenticateToken, authorizeRole(['admin']), (req, res) => {
     const { name, department } = req.body;
     const id = system.addLecturer(name, department);
@@ -144,7 +157,7 @@ app.post('/api/bookings', authenticateToken, authorizeRole(['admin', 'class_rep'
     const bookingStatus = status || 'booked';
     const userProgram = req.user.program || 'CS'; // Default to CS if missing
 
-    const success = system.bookClass(courseName, Number(lecturerId), Number(venueId), day, timeSlot, bookingStatus, userProgram);
+    const success = system.bookClass(courseName, Number(lecturerId), Number(venueId), day, timeSlot, userProgram, bookingStatus);
     if (success) {
         res.json({ success: true, message: 'Booking successful' });
     } else {

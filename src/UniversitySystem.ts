@@ -125,7 +125,7 @@ export class UniversitySystem {
         return result.count === 0;
     }
 
-    bookClass(courseName: string, lecturerId: number, venueId: number, day: string, timeSlot: string, status: 'booked' | 'temporary' | 'suspended' = 'booked', program: string): boolean {
+    bookClass(courseName: string, lecturerId: number, venueId: number, day: string, timeSlot: string, program: string, status: 'booked' | 'temporary' | 'suspended' = 'booked'): boolean {
         if (!this.checkAvailability(venueId, day, timeSlot)) {
             return false;
         }
@@ -139,6 +139,17 @@ export class UniversitySystem {
             return true;
         } catch (error) {
             console.error("Booking error:", error);
+            return false;
+        }
+    }
+
+    updateVenueStatus(venueId: number, status: 'available' | 'maintenance'): boolean {
+        try {
+            const stmt = this.db.prepare('UPDATE Venues SET status = ? WHERE venue_id = ?');
+            const info = stmt.run(status, venueId);
+            return info.changes > 0;
+        } catch (error) {
+            console.error("Update venue status error:", error);
             return false;
         }
     }
