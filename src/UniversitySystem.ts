@@ -166,6 +166,57 @@ export class UniversitySystem {
         }
     }
 
+    updateClass(classId: number, updates: { courseName?: string, lecturerId?: number, venueId?: number, day?: string, timeSlot?: string }): boolean {
+        // Get current class details to fill in missing updates
+        const current = this.db.prepare('SELECT * FROM Classes WHERE class_id = ?').get(classId) as any;
+        if (!current) return false;
+
+        const venueId = updates.venueId || current.venue_id;
+        const day = updates.day || current.day;
+        const timeSlot = updates.timeSlot || current.time_slot;
+
+        // Check availability if venue/time changed
+        // We need a check that EXCLUDES the current classId to allow updating in place requires a new check or modified check
+        // For simplicity: If venue/day/time changed, check standard availability. 
+        // Ideally we should check: count > 0 AND class_id != thisClassId
+        // Let's implement a specific check here
+
+        const conflictStmt = this.db.prepare(`
+            SELECT COUNT(*) as count 
+            FROM Classes 
+            WHERE venue_id = ? AND day = ? AND time_slot = ? AND status != 'suspended' AND class_id != ?
+        `);
+        const conflict = conflictStmt.get(venueId, day, timeSlot, classId) as { count: number };
+
+        if (conflict.count > 0) {
+            console.log("Update failed: Conflict detected");
+            return false;
+        }
+
+        // Also check maintenance if venue changed
+        if (updates.venueId) {
+            const venue = this.db.prepare('SELECT status FROM Venues WHERE venue_id = ?').get(venueId) as { status: string };
+            if (venue && venue.status === 'maintenance') return false;
+        }
+
+        try {
+            const stmt = this.db.prepare(`
+                UPDATE Classes 
+                SET course_name = COALESCE(?, course_name),
+                    lecturer_id = COALESCE(?, lecturer_id),
+                    venue_id = COALESCE(?, venue_id),
+                    day = COALESCE(?, day),
+                    time_slot = COALESCE(?, time_slot)
+                WHERE class_id = ?
+            `);
+            const info = stmt.run(updates.courseName, updates.lecturerId, updates.venueId, updates.day, updates.timeSlot, classId);
+            return info.changes > 0;
+        } catch (e) {
+            console.error("Update class error:", e);
+            return false;
+        }
+    }
+
     // --- Alternatives ---
     suggestAlternatives(requiredCapacity: number, day: string, timeSlot: string): Venue[] {
         // Find venues with enough capacity that are NOT booked at the specific time

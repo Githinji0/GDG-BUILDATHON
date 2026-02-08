@@ -80,14 +80,10 @@
 
         <main>
             <!-- Dashboard / Stats -->
-            <section class="dashboard">
-                <div class="card">
-                    <h3>Venues</h3>
-                    <ul id="venue-list">Loading...</ul>
-                </div>
-                <div class="card">
-                    <h3>Lecturers</h3>
-                    <ul id="lecturer-list">Loading...</ul>
+            <section class="dashboard-venues">
+                <h2>Campus Venues</h2>
+                <div id="venue-grid" class="venue-grid">
+                    <!-- Venue Cards Injected Here -->
                 </div>
             </section>
 
@@ -148,10 +144,7 @@
              <section class="schedule-section">
                 <div class="card">
                     <h2>Check Schedule</h2>
-                    <div class="form-group">
-                        <input type="number" id="student-id-input" placeholder="Enter Student ID (e.g. 1)">
-                        <button id="check-schedule" class="btn-secondary">Check</button>
-                    </div>
+
                     <table id="schedule-table">
                         <thead>
                             <tr>

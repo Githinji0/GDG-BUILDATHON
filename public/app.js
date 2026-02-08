@@ -40,18 +40,19 @@ function showApp(user) {
     userDisplay.textContent = user.username;
     document.getElementById('role-display').textContent = user.role.toUpperCase();
 
-    if (user.role === 'student') {
+    if (user.role === 'student' || user.role === 'class_rep') {
         userDisplay.innerHTML = `${user.username} <span style="font-size:0.8em; color:var(--text-secondary)">(Course: CS)</span>`;
-        if (user.username === 'student') {
-             loadSchedule(user);
-             // Hide the manual check form for better UX
-             document.querySelector('.schedule-section .form-group').style.display = 'none';
-        }
+        // Load schedule for both Student and Class Rep
+        loadSchedule(user);
     } else if (user.role === 'lecturer') {
         loadSchedule(user);
         document.querySelector('.schedule-section').style.display = 'block'; // Ensure visible
         document.querySelector('.schedule-section h2').textContent = 'Your Teaching Schedule';
-        document.querySelector('.schedule-section .form-group').style.display = 'none';
+    } else if (user.role === 'admin') {
+        // Option: Admin sees a global schedule? Or nothing for now?
+        // Let's leave Admin with just Booking/Venue management for simplicity, 
+        // or functionality to "Simulate" a student view.
+        // For now, no auto-load schedule for Admin to avoid errors with "me" endpoint.
     }
 
     const bookingSection = document.getElementById('booking-section');
@@ -214,18 +215,60 @@ async function fetchAndPopulate(endpoint, elementId, formatFn) {
 }
 
 function loadGeneralData() {
-    fetchAndPopulate('venues', 'venue-list', v => {
-        let statusHtml = '';
-        if (currentUser && currentUser.role === 'admin') {
-            const btnClass = v.status === 'maintenance' ? 'btn-success' : 'btn-danger';
-            const btnText = v.status === 'maintenance' ? 'Set Available' : 'Set Maintenance';
-            const nextStatus = v.status === 'maintenance' ? 'available' : 'maintenance';
-            statusHtml = ` <button class="btn-xs ${btnClass}" onclick="toggleVenueStatus(${v.venue_id}, '${nextStatus}')">${btnText}</button>`;
-        }
-        const statusLabel = v.status === 'maintenance' ? ' <span style="color:orange">[MAINTENANCE]</span>' : '';
-        return `${v.name} (Cap: ${v.capacity})${statusLabel}${statusHtml}`;
-    });
-    fetchAndPopulate('lecturers', 'lecturer-list', l => `${l.name} (${l.department})`);
+    const venueGrid = document.getElementById('venue-grid');
+    if (!venueGrid) return; // Guard clause
+    
+    venueGrid.innerHTML = '<p>Loading venues...</p>';
+
+    fetchWithAuth(`${API_URL}/venues`)
+        .then(res => res.json())
+        .then(data => {
+            // Smart update to prevent flicker
+            // If grid is empty, build from scratch. If not, update classes/status.
+            if (venueGrid.children.length === 0 || venueGrid.children.length !== data.length) {
+                venueGrid.innerHTML = '';
+                data.forEach(v => {
+                    const card = createVenueCard(v);
+                    venueGrid.appendChild(card);
+                });
+            } else {
+                 // Update existing cards
+                 Array.from(venueGrid.children).forEach((card, index) => {
+                     const v = data[index];
+                     updateVenueCard(card, v);
+                 });
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            // Don't show error on poll failure to avoid annoyance
+        });
+}
+
+function createVenueCard(v) {
+    const card = document.createElement('div');
+    updateVenueCard(card, v);
+    return card;
+}
+
+function updateVenueCard(card, v) {
+    const isMaintenance = v.status === 'maintenance';
+    card.className = `venue-card ${isMaintenance ? 'maintenance' : ''}`;
+    
+    let actionBtn = '';
+    if (currentUser && currentUser.role === 'admin') {
+        const btnClass = isMaintenance ? 'btn-success' : 'btn-danger';
+        const btnText = isMaintenance ? 'Set Available' : 'Set Maintenance';
+        const nextStatus = isMaintenance ? 'available' : 'maintenance';
+        actionBtn = `<div class="actions"><button class="btn-xs ${btnClass}" onclick="toggleVenueStatus(${v.venue_id}, '${nextStatus}')">${btnText}</button></div>`;
+    }
+
+    card.innerHTML = `
+        <h3>${v.name}</h3>
+        <p>Capacity: ${v.capacity}</p>
+        <div class="status-badge">${isMaintenance ? '⚠ MAINTENANCE' : '✔ AVAILABLE'}</div>
+        ${actionBtn}
+    `;
 }
 
 window.toggleVenueStatus = async (id, status) => {
@@ -268,6 +311,42 @@ function loadBookingData() {
 }
 
 // --- Booking Logic ---
+// --- Booking Logic ---
+let currentEditId = null; // Track if we are editing
+
+window.setupBooking = (mode, data) => {
+    const section = document.getElementById('booking-section');
+    section.style.display = 'block';
+    section.scrollIntoView({ behavior: 'smooth' });
+
+    const title = section.querySelector('h2');
+    const submitBtn = section.querySelector('button[type="submit"]');
+
+    if (mode === 'edit') {
+        currentEditId = data.class_id;
+        title.textContent = 'Edit Class';
+        submitBtn.textContent = 'Update Class';
+        
+        document.getElementById('course').value = data.course_name;
+        document.getElementById('lecturer').value = data.lecturer_id;
+        document.getElementById('venue').value = data.venue_id;
+        document.getElementById('day').value = data.day;
+        document.getElementById('time').value = data.time_slot;
+        document.getElementById('status').value = data.status || 'booked';
+    } else {
+        currentEditId = null;
+        title.textContent = 'Book a Class';
+        submitBtn.textContent = 'Book Class';
+        
+        document.getElementById('course').value = '';
+        document.getElementById('day').value = data.day || 'Monday';
+        document.getElementById('time').value = data.time || '08:00-10:00';
+    }
+    
+    document.getElementById('booking-message').textContent = '';
+    document.getElementById('alternatives-container').style.display = 'none';
+};
+
 document.getElementById('booking-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const messageEl = document.getElementById('booking-message');
@@ -287,16 +366,35 @@ document.getElementById('booking-form').addEventListener('submit', async (e) => 
     };
 
     try {
-        const res = await fetchWithAuth(`${API_URL}/bookings`, {
-            method: 'POST',
+        let url = `${API_URL}/bookings`;
+        let method = 'POST';
+
+        if (currentEditId) {
+            url = `${API_URL}/classes/${currentEditId}`;
+            method = 'PUT';
+        }
+
+        const res = await fetchWithAuth(url, {
+            method: method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(bookingData)
         });
         const result = await res.json();
 
         if (res.ok) {
-            messageEl.textContent = 'Booking Successful!';
+            messageEl.textContent = currentEditId ? 'Update Successful!' : 'Booking Successful!';
             messageEl.className = 'success';
+            // Reload schedule to show changes
+            if (currentUser) loadSchedule(currentUser);
+            // Reset mode after success
+            if (currentEditId) {
+                setTimeout(() => {
+                    currentEditId = null;
+                    document.querySelector('#booking-section h2').textContent = 'Book a Class';
+                    document.querySelector('#booking-section button[type="submit"]').textContent = 'Book Class';
+                    document.getElementById('booking-form').reset();
+                }, 2000);
+            }
         } else {
             messageEl.textContent = result.message;
             messageEl.className = 'error';
@@ -309,6 +407,7 @@ document.getElementById('booking-form').addEventListener('submit', async (e) => 
             }
         }
     } catch (err) {
+        console.error(err);
         messageEl.textContent = 'Error processing booking.';
         messageEl.className = 'error';
     }
@@ -337,104 +436,116 @@ async function fetchAlternatives(capacity, day, timeSlot) {
 // --- Schedule Logic ---
 async function loadSchedule(user) {
     let url = '';
-    if (user.role === 'student') {
+    if (user.role === 'student' || user.role === 'class_rep') {
         // Use the related_id if available, otherwise fallback (which might fail now without ID 1)
-        const id = user.user_id; // Actually we need student_id. 
-        // We didn't pass related_id in login response explicitly? 
-        // Wait, for prototype, let's just rely on the fact that we return program-filtered data?
-        // Ah, getStudentSchedule takes studentId to get course. 
-        // We should pass related_id in login response.
-        // For now, let's try to pass the ID we assumed.
-        // Actually, backend login now returns program.
-        // But getStudentSchedule needs ID to find course.
-        // Let's rely on server knowing the user. 
-        // We'll update server endpoint to use req.user.user_id/related_id if param is 'me'
-        url = `${API_URL}/schedule/${user.token ? 'me' : 1}`; // We'll fix server to handle 'me' or just trust we seeded well
-        // Actually simplest: We seeded 'student_cs' with ID likely 1, 'student_applied' with ID 2.
-        // We'll fetch 'my' schedule.
-        // Let's update server to accept /schedule/me
+        // Server handles 'me' using the authenticated user's related_id
+        url = `${API_URL}/schedule/me`; 
     } else if (user.role === 'lecturer') {
          url = `${API_URL}/schedule/lecturer/1`; 
     } else {
         return; 
     }
 
-    const res = await fetchWithAuth(url);
-    const data = await res.json();
-    
-    renderTimetable(data);
+    try {
+        const res = await fetchWithAuth(url);
+        const data = await res.json();
+        renderTimetable(data);
+    } catch (e) {
+        console.error("Load schedule error:", e);
+    }
 }
 
 function renderTimetable(classes) {
-    // Re-use existing table container but clear it, OR create a new container
-    // Let's use the schedule-section, but replace table with grid
     const container = document.querySelector('.schedule-section .card');
     
-    // Clear existing table if present, or just append after h2
-    // Simplify: Clear everything after h2
-    const h2 = container.querySelector('h2');
+    // Check if grid exists
     let grid = container.querySelector('.timetable-grid');
-    if (grid) grid.remove();
     
-    // Hide table
-    const table = container.querySelector('#schedule-table');
-    if (table) table.style.display = 'none';
+    // Compatibility Check: If grid exists but cells don't have data attributes (from old render)
+    // or if we just want to be safe, we can rebuild if it's invalid.
+    if (grid && !grid.querySelector('.grid-cell[data-day]')) {
+        grid.remove();
+        grid = null;
+    }
 
-    // Grid Headers
-    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-    const times = ['08:00-10:00', '10:00-12:00', '12:00-14:00', '14:00-16:00'];
+    if (!grid) {
+        // Clear existing table/h2 if needed (initial load)
+        const table = container.querySelector('#schedule-table');
+        if (table) table.style.display = 'none';
 
-    // Create Grid Container
-    grid = document.createElement('div');
-    grid.className = 'timetable-grid';
-    
-    // Corner
-    grid.appendChild(createHeader('Day/Time'));
-    
-    // Time Headers
-    times.forEach(t => grid.appendChild(createHeader(t)));
-
-    // Rows
-    days.forEach(day => {
-        // Day Header
-        grid.appendChild(createHeader(day));
-
-        // Time Slots
-        times.forEach(time => {
-            const cell = document.createElement('div');
-            cell.className = 'grid-cell';
-            
-            // Find classes for this slot
-            const slotClasses = classes.filter(c => c.day === day && c.time_slot === time);
-            
-            slotClasses.forEach(c => {
-                const card = document.createElement('div');
-                card.className = `class-card ${c.status}`;
-                
-                let actionBtn = '';
-                // If current user is lecturer or admin, show suspend button
-                // (Note: currentUser is global)
-                if ((currentUser.role === 'lecturer' || currentUser.role === 'admin') && c.status !== 'suspended') {
-                    actionBtn = `<button class="btn-xs btn-danger" onclick="updateStatus(${c.class_id}, 'suspended')">Suspend</button>`;
-                } else if (c.status === 'suspended' && (currentUser.role === 'lecturer' || currentUser.role === 'admin')) {
-                    actionBtn = `<button class="btn-xs btn-success" onclick="updateStatus(${c.class_id}, 'booked')">Resume</button>`;
-                }
-
-                card.innerHTML = `
-                    <h4>${c.course_name}</h4>
-                    <p>📍 ${c.venue_name}</p>
-                    <p>👨‍🏫 ${c.lecturer_id ? 'Lecturer ' + c.lecturer_id : 'N/A'}</p> 
-                    ${c.status === 'suspended' ? '<p class="status-badge" style="color:#f44336">⚠ CANCELLED</p>' : ''}
-                    ${actionBtn}
-                `;
-                cell.appendChild(card);
+        grid = document.createElement('div');
+        grid.className = 'timetable-grid';
+        
+        // Headers
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+        const times = ['08:00-10:00', '10:00-12:00', '12:00-14:00', '14:00-16:00'];
+        
+        grid.appendChild(createHeader('Day/Time'));
+        times.forEach(t => grid.appendChild(createHeader(t)));
+        
+        days.forEach(day => {
+            grid.appendChild(createHeader(day));
+            times.forEach(time => {
+                const cell = document.createElement('div');
+                cell.className = 'grid-cell';
+                cell.dataset.day = day;
+                cell.dataset.time = time;
+                grid.appendChild(cell);
             });
-
-            grid.appendChild(cell);
         });
-    });
+        container.appendChild(grid);
+    }
 
-    container.appendChild(grid);
+    // Update cells content
+    const cells = grid.querySelectorAll('.grid-cell');
+    cells.forEach(cell => {
+        const day = cell.dataset.day;
+        const time = cell.dataset.time;
+        
+        const slotClasses = classes.filter(c => c.day === day && c.time_slot === time);
+        
+        // Generate HTML for this cell
+        let newHtml = '';
+        if (slotClasses.length > 0) {
+            slotClasses.forEach(c => {
+                 let actionBtn = '';
+                 const isRep = currentUser.role === 'class_rep' || currentUser.role === 'admin';
+
+                 if ((currentUser.role === 'lecturer' || currentUser.role === 'admin') && c.status !== 'suspended') {
+                      actionBtn += `<div style="margin-top:5px;"><button class="btn-xs btn-danger" onclick="updateStatus(${c.class_id}, 'suspended')">Suspend</button></div>`;
+                 } else if (c.status === 'suspended' && (currentUser.role === 'lecturer' || currentUser.role === 'admin')) {
+                      actionBtn += `<div style="margin-top:5px;"><button class="btn-xs btn-success" onclick="updateStatus(${c.class_id}, 'booked')">Resume</button></div>`;
+                 }
+                 
+                 if (isRep) {
+                     const safeData = JSON.stringify(c).replace(/"/g, '&quot;');
+                     actionBtn += `<div style="margin-top:5px;"><button class="btn-xs btn-secondary" onclick="setupBooking('edit', ${safeData})">Edit</button></div>`;
+                 }
+
+                 newHtml += `
+                    <div class="class-card ${c.status}">
+                        <h4>${c.course_name}</h4>
+                        <p>📍 ${c.venue_name}</p>
+                        <p>👨‍🏫 ${c.lecturer_id ? 'Lecturers' : 'N/A'}</p> 
+                        ${c.status === 'suspended' ? '<p class="status-badge" style="color:#f44336">⚠ CANCELLED</p>' : ''}
+                        ${actionBtn}
+                    </div>
+                 `;
+            });
+        } else {
+             if (currentUser.role === 'class_rep' || currentUser.role === 'admin') {
+                 newHtml = `<button class="btn-xs btn-success" style="width:100%" onclick="setupBooking('add', {day:'${day}', time:'${time}'})">+ Add Class</button>`;
+                 cell.classList.add('empty-slot-interactive');
+             } else {
+                 cell.classList.remove('empty-slot-interactive');
+             }
+        }
+        
+        // Only update DOM if changed
+        if (cell.innerHTML !== newHtml) {
+            cell.innerHTML = newHtml;
+        }
+    });
 }
 
 function createHeader(text) {
@@ -467,15 +578,23 @@ window.updateStatus = async (classId, status) => {
 };
 
 // --- Auto-Refresh (Realtime Simulation) ---
+// --- Auto-Refresh (Realtime Simulation) ---
 setInterval(() => {
-    if (currentUser && (currentUser.role === 'student' || currentUser.role === 'lecturer')) {
-        loadSchedule(currentUser);
+    // Poll for everyone to ensure real-time updates
+    if (currentUser) {
+        // Only reload if we are on the schedule view
+        const scheduleSection = document.querySelector('.schedule-section');
+        if (scheduleSection && scheduleSection.style.display !== 'none') {
+             loadSchedule(currentUser);
+        }
+        
+        // Also reload venue status if on dashboard
+        if (document.getElementById('venue-grid')) {
+             loadGeneralData();
+        }
     }
-}, 5000); // Poll every 5 seconds
+}, 3000); // Poll every 3 seconds
 
-// Keep manual check for Admin/Rep if needed, or hide it
-document.getElementById('check-schedule').addEventListener('click', () => {
-   // Implementation optional for this phase
-});
+
 
 init();

@@ -125,6 +125,30 @@ app.post('/api/venues', authenticateToken, authorizeRole(['admin']), (req, res) 
     res.json({ id, name, capacity });
 });
 
+app.patch('/api/classes/:id/status', authenticateToken, authorizeRole(['lecturer', 'admin']), (req, res) => {
+    const { status } = req.body;
+    if (status !== 'booked' && status !== 'suspended') {
+        return res.status(400).json({ message: 'Invalid status' });
+    }
+    const success = system.updateClassStatus(Number(req.params.id), status);
+    if (success) {
+        res.json({ success: true });
+    } else {
+        res.status(404).json({ message: 'Class not found' });
+    }
+});
+
+app.put('/api/classes/:id', authenticateToken, authorizeRole(['class_rep', 'admin']), (req, res) => {
+    const { courseName, lecturerId, venueId, day, timeSlot } = req.body;
+    const success = system.updateClass(Number(req.params.id), { courseName, lecturerId, venueId, day, timeSlot });
+
+    if (success) {
+        res.json({ success: true, message: 'Class updated successfully' });
+    } else {
+        res.status(400).json({ message: 'Update failed: Conflict or Invalid Data' });
+    }
+});
+
 app.patch('/api/venues/:id/status', authenticateToken, authorizeRole(['admin']), (req, res) => {
     const { status } = req.body;
     if (status !== 'available' && status !== 'maintenance') {
